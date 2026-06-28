@@ -4,3 +4,7 @@ openai==2.44.0
 PyAudio==0.2.14
 pygame==2.6.1
 SpeechRecognition==3.17.0
+cvzone
+pyserial
+vosk
+pyttsx3
