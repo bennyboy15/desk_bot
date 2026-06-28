@@ -24,6 +24,8 @@ def transcribe_speech():
             
             text = recognizer.recognize_google(audio_data)
             print(f"Transcription: {text}")
+
+            return text
             
         except sr.WaitTimeoutError:
             print("Listening timed out. No speech detected.")
