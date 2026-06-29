@@ -6,10 +6,9 @@ load_dotenv()
 client = anthropic.Anthropic()
 
 SYSTEM_PROMPT = (
-    "You are a helpful desk robot assistant. "
+    "You are a helpful australian desk robot assistant. "
     "Keep replies short and conversational since they are spoken aloud."
 )
-
 
 def callClaude(msg: str) -> str:
     """Send a user message to Claude and return the text reply."""

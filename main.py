@@ -1,5 +1,5 @@
-import speechToText as s
-import llm as claude
+from software import speechToText as s
+from software import llm as claude
 
 def main():
 
