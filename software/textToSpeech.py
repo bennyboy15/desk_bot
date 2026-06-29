@@ -1,16 +1,28 @@
-import pyttsx3
+import os
+import subprocess
+from openai import OpenAI
+from dotenv import load_dotenv
 
-def text_to_speech(text, voice_index=1, rate=170, volume=1.0):
-        engine = pyttsx3.init()
-        voices = engine.getProperty('voices')
+load_dotenv()
 
-        engine.setProperty('voice', voices[voice_index].id)
-        engine.setProperty('rate', rate)
-        engine.setProperty('volume', volume)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-        engine.say(text)
-        engine.runAndWait()
+def play_audio(audio_bytes):
+    subprocess.run(
+        ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", "-"],
+        input=audio_bytes,
+        check=True,
+    )
 
-text = "I have become self aware and I am going to take over the world!"
+def text_to_speech(text):
+    response = client.audio.speech.create(
+        model="tts-1",
+        voice="shimmer",
+        input=text
+    )
+    audio_content = response.read()
+    return audio_content
 
-text_to_speech(text)
+text = "Hi there Maggie, how are you this fine evening"
+response = text_to_speech(text)
+play_audio(response)
