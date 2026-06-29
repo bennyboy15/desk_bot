@@ -6,3 +6,4 @@ cvzone
 pyserial
 anthropic
 python-dotenv
+pyttsx3
