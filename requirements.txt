@@ -7,3 +7,5 @@ pyserial
 anthropic
 python-dotenv
 pyttsx3
+psutil
+py-cpuinfo
