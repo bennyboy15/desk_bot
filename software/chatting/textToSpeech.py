@@ -25,7 +25,3 @@ def text_to_speech(text):
     )
     audio_content = response.read()
     return audio_content
-
-text = "Hi there Maggie, how are you this fine evening"
-response = text_to_speech(text)
-play_audio(response)
