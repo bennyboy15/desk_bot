@@ -1,15 +1,23 @@
 import serial
 import time
+import keyboard
 
-arduino = serial.Serial('/dev/ttyACM0', 9600, timeout=1)
+arduino = serial.Serial('COM5', 9600, timeout=1)
+#arduino = serial.Serial('/dev/ttyACM0', 9600, timeout=1) LINUX
 time.sleep(2)  # Uno resets on serial connect — wait for it to boot
 
-arduino.write(b'h')
-time.sleep(3)
-arduino.write(b's')
-time.sleep(3)
-arduino.write(b'w')
-time.sleep(3)
-arduino.write(b't')
-time.sleep(3)
-arduino.write(b'n')
+validKeys = ['h', 's', 'w', 't']
+
+def handleKeyboardInput():
+    event = keyboard.read_event()
+    if event.event_type == keyboard.KEY_DOWN:
+        pressedKey = event.name
+        print(f"Key pressed: {pressedKey}")
+        if pressedKey in validKeys:
+            print(f"Valid key pressed: {pressedKey}")
+            arduino.write(pressedKey.encode())
+            time.sleep(3)
+            arduino.write(b'n')
+
+while (1):
+    handleKeyboardInput()
