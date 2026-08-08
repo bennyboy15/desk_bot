@@ -10,3 +10,4 @@ pyttsx3
 psutil
 py-cpuinfo
 keyboard
+gputil

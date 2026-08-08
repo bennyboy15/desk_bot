@@ -18,14 +18,6 @@ int offsetY = 0;
 // Current eye openness (height), shared with draw()
 int currentHeight = eyeHeight;
 
-// Blink timing
-unsigned long lastBlinkTime = 0;
-unsigned long nextBlinkDelay = 3000;
-
-// Look-around timing
-unsigned long lastLookTime = 0;
-unsigned long nextLookDelay = 2000;
-
 Mood mood = NEUTRAL;
 
 void drawNeutralEye(int x)
@@ -51,15 +43,11 @@ void drawSadEye(int x, bool isLeft)
     u8g.setColorIndex(0);
     if (isLeft)
     {
-        u8g.drawTriangle(x - 1, y - 1,
-                         x + eyeWidth + 1, y - 1,
-                         x - 1, y + eyeHeight / 2);
+        u8g.drawTriangle(x - 1, y - 1, x + eyeWidth + 1, y - 1, x - 1, y + eyeHeight / 2);
     }
     else
     {
-        u8g.drawTriangle(x - 1, y - 1,
-                         x + eyeWidth + 1, y - 1,
-                         x + eyeWidth + 1, y + eyeHeight / 2);
+        u8g.drawTriangle(x - 1, y - 1, x + eyeWidth + 1, y - 1, x + eyeWidth + 1, y + eyeHeight / 2);
     }
     u8g.setColorIndex(1);
 }
@@ -104,7 +92,7 @@ void draw(void)
     }
 }
 
-void render()
+void renderFace()
 {
     u8g.firstPage();
     do
@@ -118,18 +106,18 @@ void doBlink()
     for (int h = eyeHeight; h >= 4; h -= 8)
     {
         currentHeight = h;
-        render();
+        renderFace();
         delay(15);
     }
     delay(60);
     for (int h = 4; h <= eyeHeight; h += 8)
     {
         currentHeight = h;
-        render();
+        renderFace();
         delay(15);
     }
     currentHeight = eyeHeight;
-    render();
+    renderFace();
 }
 
 void updateLookOffset()
@@ -142,11 +130,21 @@ void setMood(char c)
 {
     switch (c)
     {
-    case 'h': mood = HAPPY; break;
-    case 's': mood = SAD; break;
-    case 'w': mood = WINK; break;
-    case 't': mood = THINK; break;
-    case 'n': mood = NEUTRAL; break;
+    case 'h':
+        mood = HAPPY;
+        break;
+    case 's':
+        mood = SAD;
+        break;
+    case 'w':
+        mood = WINK;
+        break;
+    case 't':
+        mood = THINK;
+        break;
+    case 'n':
+        mood = NEUTRAL;
+        break;
     default:
         mood = NEUTRAL;
         return;
@@ -156,4 +154,11 @@ void setMood(char c)
     currentHeight = eyeHeight;
     Serial.print("mood: ");
     Serial.println(c);
+}
+
+void setRandomMood()
+{
+    const char moodChars[] = {'n', 'h', 's', 'w', 't'};
+    // setMood(moodChars[random(0, sizeof(moodChars))]);
+    setMood('n');
 }

@@ -2,7 +2,7 @@
 #define FACES_H
 
 #include "Arduino.h"
-#include "U8glib.h"
+#include "U8glib-HAL.h"
 
 enum Mood
 {
@@ -16,9 +16,10 @@ enum Mood
 extern U8GLIB_SH1106_128X64 u8g;
 extern Mood mood;
 
-void render();
+void renderFace();
 void doBlink();
 void updateLookOffset();
 void setMood(char c);
+void setRandomMood();
 
 #endif
