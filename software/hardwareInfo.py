@@ -1,35 +1,47 @@
 import platform
-import gputil
 import psutil
 import cpuinfo
+import serial
+import time
+
+# === Mount serial communication ===
+arduino = serial.Serial('COM5', 9600, timeout=1)
+#arduino = serial.Serial('/dev/ttyACM0', 9600, timeout=1) LINUX
+time.sleep(2)  # Uno resets on serial connect — wait for it to boot
+
+# === CPU Info ===
+def getCpuInfo():
+    processorName = cpuinfo.get_cpu_info()['brand_raw']
+    cores = psutil.cpu_count(logical=False)
+    frequency = psutil.cpu_freq().current # MHz
+    return processorName,cores,frequency
 
 # === OS & Architecture ===
-print(f"--- Operating System ---")
-print(f"OS/Platform: {platform.system()}")
-print(f"OS Version: {platform.version()}")
-print(f"Architecture: {platform.machine()}\n")
+def getOsInfo():
+    osPlatform = platform.system()
+    osVersion = platform.version()
+    architecture = platform.machine()
+    return osPlatform, osVersion, architecture
 
-# === CPU Information ===
-print(f"--- CPU Details ---")
-# py-cpuinfo gets the exact commercial name (e.g., Intel Core i7)
-print(f"Processor Name: {cpuinfo.get_cpu_info()['brand_raw']}")
-print(f"Physical Cores: {psutil.cpu_count(logical=False)}")
-print(f"Total (Logical) Cores: {psutil.cpu_count(logical=True)}")
-print(f"Current Frequency: {psutil.cpu_freq().current:.2f} MHz\n")
+# === RAM Info ===
+def getRamInfo():
+    virtual_mem = psutil.virtual_memory()
+    totalRam = virtual_mem.total / (1024**3) # GB
+    availRam = virtual_mem.available / (1024**3) # GB
+    return virtual_mem, totalRam, availRam
 
-# === RAM / Memory ===
-print(f"--- Memory / RAM ---")
-virtual_mem = psutil.virtual_memory()
-print(f"Total RAM: {virtual_mem.total / (1024**3):.2f} GB")
-print(f"Available RAM: {virtual_mem.available / (1024**3):.2f} GB\n")
 
-# === Storage / Disks ===
-print(f"--- Storage Disks ---")
-for partition in psutil.disk_partitions():
-    try:
-        usage = psutil.disk_usage(partition.mountpoint)
-        print(f"Mountpoint: {partition.mountpoint} ({partition.fstype})")
-        print(f"  Total Space: {usage.total / (1024**3):.2f} GB")
-        print(f"  Used Space: {usage.used / (1024**3):.2f} GB")
-    except PermissionError:
-        continue
+if __name__ == "__main__":
+    while(1):
+        processorName,cores,frequency = getCpuInfo()
+        osPlatform, osVersion, architecture = getOsInfo()
+        virtual_mem, totalRam, availRam = getRamInfo()
+
+        serialLine = f"{processorName} {cores} {frequency},"
+        #serialLine += f"{osPlatform},{osVersion},{architecture},"
+        #serialLine += f"{virtual_mem},{totalRam},{availRam}"
+        serialLine += f"{totalRam}, {availRam}"
+        arduino.write(serialLine.encode())
+        print(serialLine)
+        time.sleep(5)
+        
