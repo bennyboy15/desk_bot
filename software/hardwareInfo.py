@@ -1,30 +1,49 @@
+"""PC stats for the bot's stats screen.
+
+Import-safe: this module opens nothing. The daemon uses these functions, and
+running it directly sends stats through whatever transport RobotFace finds.
+"""
+
 import re
-import psutil
-import cpuinfo
-import serial
 import time
 
-#arduino = serial.Serial('COM6', 115200, timeout=1)
-arduino = serial.Serial('ttyACM0', 115200, timeout=1)
-time.sleep(2)
+import cpuinfo
+import psutil
 
-def send(cmd):
-    arduino.write((cmd + "\n").encode())
+# 21 characters is what the display fits at text size 1.
+NAME_WIDTH = 21
+
 
 def shortCpuName():
-    raw = cpuinfo.get_cpu_info()['brand_raw']
+    """Trim the marketing noise out of the CPU model name."""
+    raw = cpuinfo.get_cpu_info()["brand_raw"]
     name = re.sub(r"\((R|TM)\)|CPU|Processor|@.*", "", raw)
-    return " ".join(name.split())[:21]   # 21 chars is the display's width
+    return " ".join(name.split())[:NAME_WIDTH]
+
+
+def primeCpuPercent():
+    """psutil's first cpu_percent() always reads 0.0 — burn that call."""
+    psutil.cpu_percent()
+
+
+def statsLine(processorName):
+    """One line in the firmware's "<name>,<cpu>,<ram>" format."""
+    cpu = psutil.cpu_percent()
+    ram = psutil.virtual_memory().percent
+    return f"{processorName},{cpu:.1f},{ram:.1f}"
+
 
 if __name__ == "__main__":
-    processorName = shortCpuName()   # hoisted: get_cpu_info() spawns a subprocess
-    send("mode stats")
-    psutil.cpu_percent()             # first call always returns 0.0 — prime it
+    from robotFace import RobotFace
 
-    while True:
-        cpu = psutil.cpu_percent()
-        ram = psutil.virtual_memory().percent
-        line = f"{processorName},{cpu:.1f},{ram:.1f}"
-        send(line)
-        print(line)
-        time.sleep(1)
+    # get_cpu_info() spawns a subprocess, so read the name once up front.
+    processorName = shortCpuName()
+    primeCpuPercent()
+
+    with RobotFace() as face:
+        face.mode("stats")
+        while True:
+            line = statsLine(processorName)
+            face.send(line)
+            print(line)
+            time.sleep(1)

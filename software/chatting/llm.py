@@ -64,44 +64,66 @@ def play_gesture(gesture: str) -> str:
     return f"Played {gesture}."
 
 
+class Conversation:
+    """A running conversation. Keeps history so the bot remembers the thread."""
+
+    def __init__(self, model="claude-opus-4-8", maxTokens=1024):
+        self.model = model
+        self.maxTokens = maxTokens
+        self.messages = []
+
+    def ask(self, msg: str, face=None, onText=None) -> str:
+        """Send a message and return the reply.
+
+        onText, if given, is called with each chunk of text as it streams in —
+        that's what lets speech start before the reply has finished arriving.
+        Claude may drive the face during the call; pass the RobotFace to allow it.
+        """
+        global _face
+        _face = face
+
+        self.messages.append({"role": "user", "content": msg})
+        reply = ""
+
+        try:
+            # Streaming so text can be spoken as it arrives; tool_runner still
+            # handles the call/execute/loop cycle around it.
+            runner = client.beta.messages.tool_runner(
+                model=self.model,
+                max_tokens=self.maxTokens,
+                system=SYSTEM_PROMPT,
+                tools=[set_mood, play_gesture],
+                messages=self.messages,
+                stream=True,
+            )
+
+            # Each iteration is one assistant turn: text, or a tool call the
+            # runner resolves before looping again.
+            for stream in runner:
+                for event in stream:
+                    if event.type != "content_block_delta":
+                        continue
+                    if event.delta.type != "text_delta":
+                        continue
+
+                    reply += event.delta.text
+                    if onText is not None:
+                        onText(event.delta.text)
+        except anthropic.APIError as e:
+            print(f"Claude API error: {e}")
+            # Drop the unanswered turn so the next question isn't sent with a
+            # dangling user message and no reply.
+            self.messages.pop()
+            return ""
+        finally:
+            _face = None
+
+        # Store just the text. The tool calls were resolved inside the runner,
+        # and keeping their blocks here risks a tool_use with no tool_result.
+        self.messages.append({"role": "assistant", "content": reply})
+        return reply
+
+
 def callClaude(msg: str, face=None) -> str:
-    """Send a user message to Claude and return the text reply.
-
-    Claude may drive the robot's face while composing the reply; pass the
-    RobotFace to let it. Without one the tools still work, they just don't
-    reach any hardware.
-    """
-    global _face
-    _face = face
-
-    try:
-        # tool_runner handles the call/execute/loop cycle, so a mood change
-        # followed by the actual reply is one call from here.
-        runner = client.beta.messages.tool_runner(
-            model="claude-opus-4-8",
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            tools=[set_mood, play_gesture],
-            messages=[
-                {
-                    "role": "user",
-                    "content": msg,
-                }
-            ],
-        )
-
-        final = None
-        for message in runner:
-            final = message
-    except anthropic.APIError as e:
-        print(f"Claude API error: {e}")
-        return ""
-    finally:
-        _face = None
-
-    if final is None:
-        return ""
-
-    reply = "".join(block.text for block in final.content if block.type == "text")
-    print(reply)
-    return reply
+    """Single-exchange helper, kept for scripts that don't want history."""
+    return Conversation().ask(msg, face)

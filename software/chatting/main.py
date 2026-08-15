@@ -5,50 +5,67 @@ import sys
 # rather than as a package, so the parent directory isn't on the path yet.
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from speechToText import transcribe_speech
-from textToSpeech import text_to_speech, play_audio
-from llm import callClaude
+from speechToText import Listener
+from speaker import Speaker
+from llm import Conversation
 from robotFace import RobotFace
 
-def main():
+# Said on its own, these end the session. Checked against the whole utterance so
+# "goodbye" hangs up but "say goodbye to your dog for me" doesn't.
+EXIT_PHRASES = {"goodbye", "bye", "stop", "exit", "quit", "shut down", "shutdown"}
 
-    with RobotFace() as face:
+
+def isExit(text):
+    return text.strip().strip(".!?").lower() in EXIT_PHRASES
+
+
+def main():
+    with RobotFace() as face, Listener() as listener:
         face.mode("face")
 
         # Start neutral, then leave mood alone - it belongs to Claude from here.
-        # Deliberately not reset per turn: once this becomes a conversation loop,
-        # a mood should carry until Claude decides the feeling has changed.
+        # Deliberately not reset per turn: a mood carries until Claude decides
+        # the feeling has changed.
         face.mood("auto")
 
-        # LISTENING - eyes hold still and attentive while the mic is open
-        face.state("listening")
-        text = transcribe_speech() or ""
+        # Opens the mic and measures the room once, up front, so no turn pays
+        # for it. Everything after this starts recording immediately.
+        listener.open()
 
-        if (len(text) == 0):
-            print("No text was sent to Claude")
-            face.gesture("confused")
-            return False
+        conversation = Conversation()
 
-        # THINKING - covers the Claude call and the speech synthesis, since
-        # both happen before there is anything to play. Claude sets its own
-        # mood during this call, which then survives into speaking.
-        face.state("thinking")
-        result = callClaude(text, face)
+        while True:
+            # LISTENING - eyes lean in and hold still while the mic is open
+            face.state("listening")
+            text = listener.listen()
 
-        if (len(result) == 0):
-            print("Claude returned nothing")
-            face.gesture("confused")
-            return False
+            if not text:
+                face.gesture("confused")
+                continue
 
-        audio = text_to_speech(result)
+            if isExit(text):
+                print("Goodbye!")
+                break
 
-        # SPEAKING - set immediately before playback so the eyes bob in time
-        # with the voice; play_audio blocks until the clip finishes
-        face.state("speaking")
-        play_audio(audio)
+            # THINKING - covers the wait for Claude's first words. Claude sets
+            # its own mood during this call, which survives into speaking.
+            face.state("thinking")
 
-    # Leaving the block drops the face back to idle.
+            # Speaker flips the face to "speaking" itself, once audio actually
+            # starts, and each sentence is spoken as it arrives rather than
+            # after the whole reply is written.
+            speaker = Speaker(face)
+            reply = conversation.ask(text, face, speaker.feed)
+            speaker.finish()
+
+            if not reply:
+                face.gesture("confused")
+
     return True
 
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nInterrupted.")

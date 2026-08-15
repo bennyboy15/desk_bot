@@ -54,6 +54,22 @@
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 
+// Onboard LED, used to signal a display that never came up. Active LOW.
+#define STATUS_LED 8
+
+// If the PC stops talking mid-conversation the face would otherwise sit frozen
+// in "thinking" forever. Fall back to something sane instead.
+#define SERIAL_TIMEOUT_MS 15000
+
+// The stats screen is static enough to burn an OLED, so shift it a few pixels
+// on a slow cycle. The face already moves on its own.
+#define BURN_IN_SHIFT_MS 60000
+#define BURN_IN_MAX_OFFSET 3
+
+bool displayReady = false;
+unsigned long lastSerialLine = 0;
+bool serialSeen = false; // don't arm the watchdog until the PC has spoken once
+
 Adafruit_SH1106G display(SCREEN_WIDTH, SCREEN_HEIGHT, OLED_MOSI, OLED_CLK, OLED_DC, OLED_RES, OLED_CS);
 
 RoboEyes<Adafruit_SH1106G> roboEyes(display);
@@ -372,6 +388,14 @@ void drawStatLine(int16_t y, const char *label, float percent)
     display.print(value);
 }
 
+// Walks 0,1,2,3,2,1,... so the layout drifts and returns rather than marching
+// off the bottom of the screen.
+int16_t burnInOffset()
+{
+    unsigned long step = (millis() / BURN_IN_SHIFT_MS) % (BURN_IN_MAX_OFFSET * 2);
+    return (int16_t)(step <= BURN_IN_MAX_OFFSET ? step : (BURN_IN_MAX_OFFSET * 2) - step);
+}
+
 void statsUpdate()
 {
     static unsigned long lastDraw = 0;
@@ -381,6 +405,8 @@ void statsUpdate()
     }
     lastDraw = millis();
 
+    int16_t shift = burnInOffset();
+
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SH110X_WHITE);
@@ -389,7 +415,7 @@ void statsUpdate()
     if (!statsReceived)
     {
         const char *msg = "waiting for data...";
-        display.setCursor((SCREEN_WIDTH - strlen(msg) * 6) / 2, 28);
+        display.setCursor((SCREEN_WIDTH - strlen(msg) * 6) / 2, 28 + shift);
         display.print(msg);
         display.display();
         return;
@@ -400,16 +426,16 @@ void statsUpdate()
     int16_t x1, y1;
     uint16_t w, h;
     display.getTextBounds(processorName, 0, 0, &x1, &y1, &w, &h);
-    display.setCursor(w < SCREEN_WIDTH ? (SCREEN_WIDTH - w) / 2 : 0, 0);
+    display.setCursor(w < SCREEN_WIDTH ? (SCREEN_WIDTH - w) / 2 : 0, shift);
     display.print(processorName);
 
-    display.drawFastHLine(0, 11, SCREEN_WIDTH, SH110X_WHITE);
+    display.drawFastHLine(0, 11 + shift, SCREEN_WIDTH, SH110X_WHITE);
 
-    drawStatLine(16, "CPU", cpuUsage);
-    drawBar(26, cpuUsage);
+    drawStatLine(16 + shift, "CPU", cpuUsage);
+    drawBar(26 + shift, cpuUsage);
 
-    drawStatLine(40, "RAM", ramUsage);
-    drawBar(50, ramUsage);
+    drawStatLine(40 + shift, "RAM", ramUsage);
+    drawBar(50 + shift, ramUsage);
 
     display.display();
 }
@@ -517,6 +543,9 @@ void dumpFrame()
 
 void handleLine(char *line)
 {
+    lastSerialLine = millis();
+    serialSeen = true;
+
 #if DEBUG_SERIAL
     Serial.printf("[rx] \"%s\"\n", line);
 
@@ -638,11 +667,42 @@ void readSerial()
 //  MAIN
 //*********************************************************************************************
 
+// The PC has gone quiet — don't leave the face stuck mid-conversation.
+void checkSerialWatchdog()
+{
+    if (!serialSeen || millis() - lastSerialLine < SERIAL_TIMEOUT_MS)
+    {
+        return;
+    }
+
+    serialSeen = false; // one-shot: re-arms when the PC next says something
+
+#if DEBUG_SERIAL
+    Serial.println("[!!] serial timeout — falling back to an idle face");
+#endif
+
+    moodOverride = -1;
+    setMode(MODE_FACE); // stale stats are worse than no stats
+    applyExpression(EXPR_IDLE);
+}
+
 void setup()
 {
     Serial.begin(115200);
 
-    display.begin(0, true);
+    pinMode(STATUS_LED, OUTPUT);
+    digitalWrite(STATUS_LED, HIGH); // active LOW, so HIGH is off
+
+    // begin() reports whether the panel actually answered. Without this check a
+    // miswired display looks identical to a crashed board: a blank screen.
+    displayReady = display.begin(0, true);
+
+    if (!displayReady)
+    {
+        Serial.println("[!!] display did not initialise — check the SPI wiring");
+        return;
+    }
+
     display.clearDisplay();
     display.display();
 
@@ -655,6 +715,17 @@ void setup()
 
 void loop()
 {
+    // Keep serving serial either way, so the failure is diagnosable over USB
+    // rather than only by looking at a screen that isn't working.
     readSerial();
+
+    if (!displayReady)
+    {
+        // Slow heartbeat on the onboard LED: the board is alive, the panel isn't.
+        digitalWrite(STATUS_LED, (millis() / 500) % 2 ? HIGH : LOW);
+        return;
+    }
+
+    checkSerialWatchdog();
     updateMode();
 }
