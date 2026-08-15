@@ -34,6 +34,13 @@ def statsLine(processorName):
 
 
 if __name__ == "__main__":
+    import os
+    import sys
+
+    # Running as "python -m software.hardwareInfo" doesn't put this directory on
+    # the path the way running the file directly does, and robotFace lives here.
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
     from robotFace import RobotFace
 
     # get_cpu_info() spawns a subprocess, so read the name once up front.
@@ -41,6 +48,17 @@ if __name__ == "__main__":
     primeCpuPercent()
 
     with RobotFace() as face:
+        if not face.connected:
+            # Without this the script looks like it's working - it prints stats
+            # happily - while every command is silently dropped and the bot just
+            # sits on its boot face.
+            print(
+                "\n  No connection to the bot: these stats are going nowhere.\n"
+                "  Close whatever else is holding the serial port, or start\n"
+                "  robotDaemon.py and let everything share it.\n",
+                file=sys.stderr,
+            )
+
         face.mode("stats")
         while True:
             line = statsLine(processorName)

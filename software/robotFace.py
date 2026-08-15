@@ -93,6 +93,11 @@ class RobotFace:
         self.quiet = quiet
         self.link = None
 
+    @property
+    def connected(self):
+        """False when commands are being silently dropped."""
+        return self.link is not None
+
     def log(self, message):
         if not self.quiet:
             print(message, file=sys.stderr)
