@@ -11,3 +11,4 @@ psutil
 py-cpuinfo
 keyboard
 gputil
+openai

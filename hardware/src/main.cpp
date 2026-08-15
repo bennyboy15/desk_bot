@@ -18,6 +18,9 @@
     mode face             switch to the animated face
     mode stats            switch to the PC stats readout
     mode next             cycle to the next mode
+    face <state>          set the face: idle, listening, thinking, speaking,
+                          happy, angry, tired
+    face <gesture>        play a one-shot animation: laugh, confused
 */
 
 #include <Adafruit_GFX.h>
@@ -30,6 +33,13 @@
 // Echo every received line back over serial. Watch it with the PlatformIO
 // monitor to confirm what the firmware is actually parsing.
 #define DEBUG_SERIAL 1
+
+// Arduino.h defines DEFAULT as 1 (an ADC reference) and RoboEyes redefines it
+// as 0 for its neutral mood and centred eye position — whichever header is
+// included last wins. That's RoboEyes today only because the includes are
+// sorted alphabetically. Pin the value we mean so a reorder can't turn a
+// neutral face into TIRED, or centred eyes into a glance upward.
+#define EYES_NEUTRAL 0
 
 // --- SPI pins ---
 #define OLED_CLK 4  // SCK / CLK
@@ -53,7 +63,7 @@ float ramUsage = 0;
 bool statsReceived = false;
 
 // --- MODES ---
-// To add a mode: add it to the enum before MODE_COUNT, write its enter/update
+// NEED TO ADD A MODE = add it to the enum before MODE_COUNT, write its enter/update
 // functions, and add a case to each switch in enterMode() / updateMode().
 enum Mode : uint8_t
 {
@@ -68,40 +78,213 @@ Mode currentMode = MODE_FACE;
 //  FACE MODE
 //*********************************************************************************************
 
-void faceEnter()
+// The face tracks what the robot is doing, driven from the PC over serial.
+// The chat pipeline sends one state per stage of a conversation.
+// NEED TO ADD A STATE = add it to the enum before EXPR_COUNT, add its name to
+// expressionNames at the same index, and give it a case in applyExpression().
+enum Expression : uint8_t
 {
-    roboEyes.setMood(DEFAULT);
+    EXPR_IDLE,
+    EXPR_LISTENING,
+    EXPR_THINKING,
+    EXPR_SPEAKING,
+    EXPR_HAPPY,
+    EXPR_ANGRY,
+    EXPR_TIRED,
+    EXPR_COUNT // keep last — bounds the name lookup
+};
+
+// Indices must line up with the enum above.
+const char *const expressionNames[EXPR_COUNT] = {
+    "idle", "listening", "thinking", "speaking", "happy", "angry", "tired",
+};
+
+Expression currentExpression = EXPR_IDLE;
+
+// --- MOUTH ---
+// Only drawn while speaking. RoboEyes clears the whole framebuffer on every
+// eye frame, so the mouth has to be painted on afterwards and pushed again.
+#define MOUTH_WIDTH 44
+#define MOUTH_CENTER_X (SCREEN_WIDTH / 2)
+#define MOUTH_CENTER_Y 46 // sits below the raised eyes of the speaking face
+#define MOUTH_CLOSED_HEIGHT 3
+#define MOUTH_OPEN_HEIGHT 20
+#define MOUTH_STEP_MS 80 // how often the mouth picks a new opening
+
+int16_t mouthHeight = MOUTH_CLOSED_HEIGHT;
+int16_t mouthTarget = MOUTH_CLOSED_HEIGHT;
+
+// Random targets rather than a steady flap — a metronome reads as a machine,
+// uneven motion reads as speech. Tweened with the same halving the eyes use.
+void updateMouth()
+{
+    static unsigned long targetTimer = 0;
+
+    if (millis() - targetTimer >= MOUTH_STEP_MS)
+    {
+        targetTimer = millis();
+        mouthTarget = random(MOUTH_CLOSED_HEIGHT, MOUTH_OPEN_HEIGHT + 1);
+    }
+
+    mouthHeight = (mouthHeight + mouthTarget) / 2;
+}
+
+void drawMouth()
+{
+    // Wipe the full swept area first: the eyes redraw themselves each frame,
+    // but a shrinking mouth would otherwise leave its old edges behind.
+    display.fillRect(MOUTH_CENTER_X - MOUTH_WIDTH / 2, MOUTH_CENTER_Y - MOUTH_OPEN_HEIGHT / 2,
+                     MOUTH_WIDTH, MOUTH_OPEN_HEIGHT, SH110X_BLACK);
+
+    int16_t radius = mouthHeight / 2;
+    if (radius > 6)
+    {
+        radius = 6;
+    }
+
+    display.fillRoundRect(MOUTH_CENTER_X - MOUTH_WIDTH / 2, MOUTH_CENTER_Y - mouthHeight / 2,
+                          MOUTH_WIDTH, mouthHeight, radius, SH110X_WHITE);
+}
+
+// Every state starts from the same baseline, so settings can't leak between
+// them — otherwise "speaking" would leave its flicker and its shrunken eyes
+// behind. Geometry is reset here too, since RoboEyes' setters overwrite the
+// defaults they tween back to.
+void applyExpression(Expression expression)
+{
+    roboEyes.setVFlicker(OFF);
+    roboEyes.setHFlicker(OFF);
+    roboEyes.setCuriosity(OFF);
+    roboEyes.setSweat(OFF);
+    roboEyes.setPosition(EYES_NEUTRAL); // anything that is not a compass point centres the eyes
+    roboEyes.setWidth(36, 36);
+    roboEyes.setHeight(36, 36);
+    roboEyes.setBorderradius(8, 8);
+    roboEyes.setSpacebetween(10);
+
+    switch (expression)
+    {
+    case EXPR_IDLE:
+        roboEyes.setMood(EYES_NEUTRAL);
+        roboEyes.setAutoblinker(ON, 3, 2);
+        roboEyes.setIdleMode(ON, 2, 2);
+        break;
+    case EXPR_LISTENING:
+        // Leans to the left edge and holds there — idle mode off so it doesn't
+        // wander off the lean. Curiosity swells whichever eye is nearest the
+        // edge, which sells it as leaning in rather than just looking sideways.
+        roboEyes.setMood(EYES_NEUTRAL);
+        roboEyes.setAutoblinker(ON, 4, 2);
+        roboEyes.setIdleMode(OFF);
+        roboEyes.setCuriosity(ON);
+        roboEyes.setBorderradius(12, 12); // softer, more open-looking
+        roboEyes.setPosition(W);
+        break;
+    case EXPR_THINKING:
+        // Frequent idle movement reads as looking around for an answer; the
+        // sweat drop is the "working on it" cue.
+        roboEyes.setMood(TIRED);
+        roboEyes.setAutoblinker(ON, 2, 1);
+        roboEyes.setIdleMode(ON, 1, 1);
+        roboEyes.setSweat(ON);
+        roboEyes.setHeight(30, 30);
+        break;
+    case EXPR_SPEAKING:
+        // Eyes shrink and move to the top of the screen to make room for the
+        // mouth underneath, turning the display into an actual face.
+        roboEyes.setMood(HAPPY);
+        roboEyes.setAutoblinker(ON, 3, 2);
+        roboEyes.setIdleMode(OFF);
+        roboEyes.setWidth(34, 34);
+        roboEyes.setHeight(24, 24);
+        roboEyes.setBorderradius(6, 6);
+        roboEyes.setSpacebetween(12);
+        roboEyes.setPosition(N);
+        mouthHeight = MOUTH_CLOSED_HEIGHT;
+        mouthTarget = MOUTH_CLOSED_HEIGHT;
+        break;
+    case EXPR_HAPPY:
+        // Big and round.
+        roboEyes.setMood(HAPPY);
+        roboEyes.setAutoblinker(ON, 3, 2);
+        roboEyes.setIdleMode(ON, 2, 2);
+        roboEyes.setWidth(38, 38);
+        roboEyes.setHeight(38, 38);
+        roboEyes.setBorderradius(14, 14);
+        break;
+    case EXPR_ANGRY:
+        // Narrow, sharp-cornered, and trembling.
+        roboEyes.setMood(ANGRY);
+        roboEyes.setAutoblinker(ON, 4, 2);
+        roboEyes.setIdleMode(OFF);
+        roboEyes.setHeight(30, 30);
+        roboEyes.setBorderradius(3, 3);
+        roboEyes.setSpacebetween(6);
+        roboEyes.setHFlicker(ON, 1);
+        break;
+    case EXPR_TIRED:
+        // Heavy-lidded: short eyes, slow blink, slow drift.
+        roboEyes.setMood(TIRED);
+        roboEyes.setAutoblinker(ON, 2, 2);
+        roboEyes.setIdleMode(ON, 3, 2);
+        roboEyes.setHeight(24, 24);
+        roboEyes.setBorderradius(10, 10);
+        break;
+    default:
+        break;
+    }
+
+    currentExpression = expression;
+}
+
+// Returns false if the name isn't a known state, so the caller can try gestures.
+bool setExpression(const char *name)
+{
+    for (uint8_t i = 0; i < EXPR_COUNT; i++)
+    {
+        if (strcasecmp(name, expressionNames[i]) == 0)
+        {
+            applyExpression((Expression)i);
+            return true;
+        }
+    }
+    return false;
+}
+
+// One-shot animations. They play over whatever state is current and leave it
+// alone, so a laugh mid-sentence doesn't knock the face out of "speaking".
+bool playGesture(const char *name)
+{
+    if (strcasecmp(name, "laugh") == 0)
+    {
+        roboEyes.anim_laugh();
+        return true;
+    }
+    if (strcasecmp(name, "confused") == 0)
+    {
+        roboEyes.anim_confused();
+        return true;
+    }
+    return false;
 }
 
 void faceUpdate()
 {
-    // RoboEyes owns the whole framebuffer: drawEyes() calls clearDisplay() at
-    // the start and display() at the end, so nothing else may draw in this mode.
+    // RoboEyes owns the framebuffer: drawEyes() clears it, draws the eyes, and
+    // pushes. So the mouth has to go on straight afterwards and be pushed
+    // again — and only on frames where the eyes actually redrew, or it would
+    // be wiped mid-blink and flicker. update() bumps fpsTimer exactly when it
+    // draws, which is the cheapest way to spot that.
+    static unsigned long lastEyeFrame = 0;
+
     roboEyes.update();
 
-    static unsigned long lastChange = 0;
-    static int state = 0;
-
-    if (millis() - lastChange > 5000)
+    if (currentExpression == EXPR_SPEAKING && roboEyes.fpsTimer != lastEyeFrame)
     {
-        lastChange = millis();
-        state = (state + 1) % 4;
-
-        switch (state)
-        {
-        case 0:
-            roboEyes.setMood(DEFAULT);
-            break;
-        case 1:
-            roboEyes.setMood(HAPPY);
-            break;
-        case 2:
-            roboEyes.setMood(TIRED);
-            break;
-        case 3:
-            roboEyes.anim_laugh();
-            break;
-        }
+        lastEyeFrame = roboEyes.fpsTimer;
+        updateMouth();
+        drawMouth();
+        display.display();
     }
 }
 
@@ -142,11 +325,6 @@ void drawStatLine(int16_t y, const char *label, float percent)
     // The default font advances 6px per character at size 1.
     display.setCursor(SCREEN_WIDTH - strlen(value) * 6, y);
     display.print(value);
-}
-
-void statsEnter()
-{
-    // Nothing to set up — statsUpdate() repaints the whole screen.
 }
 
 void statsUpdate()
@@ -206,10 +384,11 @@ void enterMode(Mode mode)
     switch (mode)
     {
     case MODE_FACE:
-        faceEnter();
+        // Re-apply rather than reset: a "face thinking" that arrived while the
+        // stats screen was up should still be showing when we come back.
+        applyExpression(currentExpression);
         break;
     case MODE_STATS:
-        statsEnter();
         break;
     default:
         break;
@@ -267,10 +446,40 @@ void parseStats(char *line)
     statsReceived = true;
 }
 
+#if DEBUG_SERIAL
+// Print the framebuffer as ASCII art. Lets the rendering be checked over the
+// serial monitor without having to eyeball the panel — the buffer is the exact
+// thing the display was last given.
+void dumpFrame()
+{
+    uint8_t *buffer = display.getBuffer();
+
+    Serial.println("[frame]");
+    for (int16_t y = 0; y < SCREEN_HEIGHT; y++)
+    {
+        char row[SCREEN_WIDTH + 1];
+        for (int16_t x = 0; x < SCREEN_WIDTH; x++)
+        {
+            // Monochrome pages: bit (y & 7) of byte x + (y / 8) * width.
+            row[x] = (buffer[x + (y / 8) * SCREEN_WIDTH] & (1 << (y & 7))) ? '#' : '.';
+        }
+        row[SCREEN_WIDTH] = '\0';
+        Serial.println(row);
+    }
+    Serial.println("[/frame]");
+}
+#endif
+
 void handleLine(char *line)
 {
 #if DEBUG_SERIAL
     Serial.printf("[rx] \"%s\"\n", line);
+
+    if (strcasecmp(line, "dump") == 0)
+    {
+        dumpFrame();
+        return;
+    }
 #endif
 
     if (strncasecmp(line, "mode ", 5) == 0)
@@ -295,6 +504,33 @@ void handleLine(char *line)
             Serial.printf("[!!] unknown mode \"%s\"\n", arg);
         }
         Serial.printf("[ok] mode is now %d\n", currentMode);
+#endif
+        return;
+    }
+
+    if (strncasecmp(line, "face ", 5) == 0)
+    {
+        const char *arg = line + 5;
+
+        // States are sticky, gestures are one-shot — try states first so a
+        // name can't be both.
+        if (setExpression(arg))
+        {
+#if DEBUG_SERIAL
+            Serial.printf("[ok] face is now %s\n", expressionNames[currentExpression]);
+#endif
+        }
+        else if (playGesture(arg))
+        {
+#if DEBUG_SERIAL
+            Serial.printf("[ok] played gesture %s\n", arg);
+#endif
+        }
+#if DEBUG_SERIAL
+        else
+        {
+            Serial.printf("[!!] unknown face \"%s\"\n", arg);
+        }
 #endif
         return;
     }
@@ -347,9 +583,9 @@ void setup()
     display.display();
 
     roboEyes.begin(SCREEN_WIDTH, SCREEN_HEIGHT, 100);
-    roboEyes.setAutoblinker(ON, 3, 2);
-    roboEyes.setIdleMode(ON, 2, 2);
 
+    // enterMode() applies the current expression, which sets the blinker and
+    // idle timings — no need to configure them separately here.
     enterMode(MODE_FACE);
 }
 
