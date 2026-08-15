@@ -21,6 +21,8 @@
     face <state>          set the face: idle, listening, thinking, speaking,
                           happy, angry, tired
     face <gesture>        play a one-shot animation: laugh, confused
+    mood <name>           colour the current state: neutral, tired, angry,
+                          happy, or auto to let the state decide again
 */
 
 #include <Adafruit_GFX.h>
@@ -146,6 +148,20 @@ void drawMouth()
                           MOUTH_WIDTH, mouthHeight, radius, SH110X_WHITE);
 }
 
+// --- MOOD ---
+// Mood is deliberately separate from state. The PC drives states to match what
+// the robot is doing (listening, speaking); Claude drives mood to match what it
+// is saying. Keeping them apart means a mood set while thinking survives the
+// switch to speaking, instead of being overwritten by that state's own mood.
+// Values are RoboEyes' mood constants; -1 means "no override, state decides".
+#define MOOD_COUNT 4
+int8_t moodOverride = -1;
+
+// Indices are the RoboEyes mood values: DEFAULT 0, TIRED 1, ANGRY 2, HAPPY 3.
+const char *const moodNames[MOOD_COUNT] = {
+    "neutral", "tired", "angry", "happy",
+};
+
 // Every state starts from the same baseline, so settings can't leak between
 // them — otherwise "speaking" would leave its flicker and its shrunken eyes
 // behind. Geometry is reset here too, since RoboEyes' setters overwrite the
@@ -162,10 +178,13 @@ void applyExpression(Expression expression)
     roboEyes.setBorderradius(8, 8);
     roboEyes.setSpacebetween(10);
 
+    // What this state would look like on its own; the override wins below.
+    uint8_t stateMood = EYES_NEUTRAL;
+
     switch (expression)
     {
     case EXPR_IDLE:
-        roboEyes.setMood(EYES_NEUTRAL);
+        stateMood = EYES_NEUTRAL;
         roboEyes.setAutoblinker(ON, 3, 2);
         roboEyes.setIdleMode(ON, 2, 2);
         break;
@@ -173,7 +192,7 @@ void applyExpression(Expression expression)
         // Leans to the left edge and holds there — idle mode off so it doesn't
         // wander off the lean. Curiosity swells whichever eye is nearest the
         // edge, which sells it as leaning in rather than just looking sideways.
-        roboEyes.setMood(EYES_NEUTRAL);
+        stateMood = EYES_NEUTRAL;
         roboEyes.setAutoblinker(ON, 4, 2);
         roboEyes.setIdleMode(OFF);
         roboEyes.setCuriosity(ON);
@@ -183,7 +202,7 @@ void applyExpression(Expression expression)
     case EXPR_THINKING:
         // Frequent idle movement reads as looking around for an answer; the
         // sweat drop is the "working on it" cue.
-        roboEyes.setMood(TIRED);
+        stateMood = TIRED;
         roboEyes.setAutoblinker(ON, 2, 1);
         roboEyes.setIdleMode(ON, 1, 1);
         roboEyes.setSweat(ON);
@@ -192,7 +211,7 @@ void applyExpression(Expression expression)
     case EXPR_SPEAKING:
         // Eyes shrink and move to the top of the screen to make room for the
         // mouth underneath, turning the display into an actual face.
-        roboEyes.setMood(HAPPY);
+        stateMood = HAPPY;
         roboEyes.setAutoblinker(ON, 3, 2);
         roboEyes.setIdleMode(OFF);
         roboEyes.setWidth(34, 34);
@@ -205,7 +224,7 @@ void applyExpression(Expression expression)
         break;
     case EXPR_HAPPY:
         // Big and round.
-        roboEyes.setMood(HAPPY);
+        stateMood = HAPPY;
         roboEyes.setAutoblinker(ON, 3, 2);
         roboEyes.setIdleMode(ON, 2, 2);
         roboEyes.setWidth(38, 38);
@@ -214,7 +233,7 @@ void applyExpression(Expression expression)
         break;
     case EXPR_ANGRY:
         // Narrow, sharp-cornered, and trembling.
-        roboEyes.setMood(ANGRY);
+        stateMood = ANGRY;
         roboEyes.setAutoblinker(ON, 4, 2);
         roboEyes.setIdleMode(OFF);
         roboEyes.setHeight(30, 30);
@@ -224,7 +243,7 @@ void applyExpression(Expression expression)
         break;
     case EXPR_TIRED:
         // Heavy-lidded: short eyes, slow blink, slow drift.
-        roboEyes.setMood(TIRED);
+        stateMood = TIRED;
         roboEyes.setAutoblinker(ON, 2, 2);
         roboEyes.setIdleMode(ON, 3, 2);
         roboEyes.setHeight(24, 24);
@@ -234,7 +253,33 @@ void applyExpression(Expression expression)
         break;
     }
 
+    // Claude's choice outranks the state's own idea of how it should look.
+    roboEyes.setMood(moodOverride >= 0 ? (unsigned char)moodOverride : stateMood);
+
     currentExpression = expression;
+}
+
+// "auto" hands control back to whatever state is current. Re-applies straight
+// away so the change shows without waiting for the next state transition.
+bool setMood(const char *name)
+{
+    if (strcasecmp(name, "auto") == 0)
+    {
+        moodOverride = -1;
+        applyExpression(currentExpression);
+        return true;
+    }
+
+    for (uint8_t i = 0; i < MOOD_COUNT; i++)
+    {
+        if (strcasecmp(name, moodNames[i]) == 0)
+        {
+            moodOverride = (int8_t)i;
+            applyExpression(currentExpression);
+            return true;
+        }
+    }
+    return false;
 }
 
 // Returns false if the name isn't a known state, so the caller can try gestures.
@@ -481,6 +526,25 @@ void handleLine(char *line)
         return;
     }
 #endif
+
+    if (strncasecmp(line, "mood ", 5) == 0)
+    {
+        const char *arg = line + 5;
+
+        if (setMood(arg))
+        {
+#if DEBUG_SERIAL
+            Serial.printf("[ok] mood is now %s\n", moodOverride < 0 ? "auto" : moodNames[moodOverride]);
+#endif
+        }
+#if DEBUG_SERIAL
+        else
+        {
+            Serial.printf("[!!] unknown mood \"%s\"\n", arg);
+        }
+#endif
+        return;
+    }
 
     if (strncasecmp(line, "mode ", 5) == 0)
     {

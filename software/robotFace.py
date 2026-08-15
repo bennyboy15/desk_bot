@@ -91,6 +91,10 @@ class RobotFace:
     def gesture(self, name):
         self.send(f"face {name}")
 
+    def mood(self, name):
+        """Colour the current state. "auto" hands control back to the state."""
+        self.send(f"mood {name}")
+
     def __enter__(self):
         return self.connect()
 

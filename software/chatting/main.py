@@ -15,6 +15,11 @@ def main():
     with RobotFace() as face:
         face.mode("face")
 
+        # Start neutral, then leave mood alone - it belongs to Claude from here.
+        # Deliberately not reset per turn: once this becomes a conversation loop,
+        # a mood should carry until Claude decides the feeling has changed.
+        face.mood("auto")
+
         # LISTENING - eyes hold still and attentive while the mic is open
         face.state("listening")
         text = transcribe_speech() or ""
@@ -25,9 +30,10 @@ def main():
             return False
 
         # THINKING - covers the Claude call and the speech synthesis, since
-        # both happen before there is anything to play
+        # both happen before there is anything to play. Claude sets its own
+        # mood during this call, which then survives into speaking.
         face.state("thinking")
-        result = callClaude(text)
+        result = callClaude(text, face)
 
         if (len(result) == 0):
             print("Claude returned nothing")
