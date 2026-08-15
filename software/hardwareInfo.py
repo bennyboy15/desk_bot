@@ -1,47 +1,29 @@
-import platform
+import re
 import psutil
 import cpuinfo
 import serial
 import time
 
-# === Mount serial communication ===
-arduino = serial.Serial('COM5', 9600, timeout=1)
-#arduino = serial.Serial('/dev/ttyACM0', 9600, timeout=1) LINUX
-time.sleep(2)  # Uno resets on serial connect — wait for it to boot
+arduino = serial.Serial('COM6', 115200, timeout=1)
+time.sleep(2)
 
-# === CPU Info ===
-def getCpuInfo():
-    processorName = cpuinfo.get_cpu_info()['brand_raw']
-    cores = psutil.cpu_count(logical=False)
-    frequency = psutil.cpu_freq().current # MHz
-    return processorName,cores,frequency
+def send(cmd):
+    arduino.write((cmd + "\n").encode())
 
-# === OS & Architecture ===
-def getOsInfo():
-    osPlatform = platform.system()
-    osVersion = platform.version()
-    architecture = platform.machine()
-    return osPlatform, osVersion, architecture
-
-# === RAM Info ===
-def getRamInfo():
-    virtual_mem = psutil.virtual_memory()
-    totalRam = virtual_mem.total / (1024**3) # GB
-    availRam = virtual_mem.available / (1024**3) # GB
-    return virtual_mem, totalRam, availRam
-
+def shortCpuName():
+    raw = cpuinfo.get_cpu_info()['brand_raw']
+    name = re.sub(r"\((R|TM)\)|CPU|Processor|@.*", "", raw)
+    return " ".join(name.split())[:21]   # 21 chars is the display's width
 
 if __name__ == "__main__":
-    while(1):
-        processorName,cores,frequency = getCpuInfo()
-        osPlatform, osVersion, architecture = getOsInfo()
-        virtual_mem, totalRam, availRam = getRamInfo()
+    processorName = shortCpuName()   # hoisted: get_cpu_info() spawns a subprocess
+    send("mode stats")
+    psutil.cpu_percent()             # first call always returns 0.0 — prime it
 
-        serialLine = f"{processorName} {cores} {frequency},"
-        #serialLine += f"{osPlatform},{osVersion},{architecture},"
-        #serialLine += f"{virtual_mem},{totalRam},{availRam}"
-        serialLine += f"{totalRam}, {availRam}"
-        arduino.write(serialLine.encode())
-        print(serialLine)
-        time.sleep(5)
-        
+    while True:
+        cpu = psutil.cpu_percent()
+        ram = psutil.virtual_memory().percent
+        line = f"{processorName},{cpu:.1f},{ram:.1f}"
+        send(line)
+        print(line)
+        time.sleep(1)

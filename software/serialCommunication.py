@@ -2,7 +2,7 @@ import serial
 import time
 import keyboard
 
-arduino = serial.Serial('COM5', 9600, timeout=1)
+arduino = serial.Serial('COM6', 115200, timeout=1)
 #arduino = serial.Serial('/dev/ttyACM0', 9600, timeout=1) LINUX
 time.sleep(2)  # Uno resets on serial connect — wait for it to boot
 
@@ -19,5 +19,14 @@ def handleKeyboardInput():
             time.sleep(3)
             arduino.write(b'n')
 
-while (1):
-    handleKeyboardInput()
+def send(cmd):
+    arduino.write((cmd + "\n").encode())
+
+while True:
+    print("MODE STATS")
+    send("mode stats")
+    time.sleep(5)
+    print("MODE FACE")
+    send("mode face")
+    time.sleep(5)
+

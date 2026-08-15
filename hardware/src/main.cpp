@@ -1,54 +1,257 @@
-#include "U8glib-HAL.h"
-#include "faces.h"
-#include "walkingMan.h"
+/*
+  Mochi-style animated face — PlatformIO version
+  Board:    ESP32-C3 Supermini
+  Display:  Jaycar XC3728 / Keyestudio KS0056, 1.3" 128x64, SH1106 driver, SPI
+  Library:  Adafruit_SH110X (for the SH1106 chip) + FluxGarage RoboEyes
+
+  Wiring:
+    OLED GND       -> ESP32-C3 GND
+    OLED VCC       -> ESP32-C3 3V3
+    OLED SCK/CLK   -> ESP32-C3 GPIO4
+    OLED SDA/MOSI  -> ESP32-C3 GPIO6
+    OLED RES/RST   -> ESP32-C3 GPIO10
+    OLED DC        -> ESP32-C3 GPIO3
+    OLED CS        -> ESP32-C3 GPIO7
+
+  Serial protocol (115200 baud, newline-terminated):
+    <name>,<cpu>,<ram>    PC stats, e.g. "Ryzen 7 5800X,42.5,63.1"
+    mode face             switch to the animated face
+    mode stats            switch to the PC stats readout
+    mode next             cycle to the next mode
+*/
+
+#include <Adafruit_GFX.h>
+#include <Adafruit_SH110X.h>
 #include <Arduino.h>
+#include <FluxGarage_RoboEyes.h>
+#include <SPI.h>
+#include <strings.h>
 
-U8GLIB_SH1106_128X64 u8g(13, 11, 10, 9, 8);
+// Echo every received line back over serial. Watch it with the PlatformIO
+// monitor to confirm what the firmware is actually parsing.
+#define DEBUG_SERIAL 1
 
-// How long each half of the cycle lasts: stats, then a random face
-const unsigned long PHASE_DURATION = 30000;
+// --- SPI pins ---
+#define OLED_CLK 4  // SCK / CLK
+#define OLED_MOSI 6 // SDA / MOSI
+#define OLED_RES 10 // RES / RST
+#define OLED_DC 3   // DC
+#define OLED_CS 7   // CS
 
+// --- OLED settings ---
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+
+Adafruit_SH1106G display(SCREEN_WIDTH, SCREEN_HEIGHT, OLED_MOSI, OLED_CLK, OLED_DC, OLED_RES, OLED_CS);
+
+RoboEyes<Adafruit_SH1106G> roboEyes(display);
+
+// PC STATS + INFO
 char processorName[32] = "";
 float cpuUsage = 0;
 float ramUsage = 0;
+bool statsReceived = false;
 
-uint8_t walkFrame = 0;
-unsigned long lastFrameTime = 0;
-
-bool showingStats = true;
-unsigned long phaseStartTime = 0;
-
-// Face animation timing, reset every time the face phase starts
-unsigned long lastLookTime = 0;
-unsigned long nextLookDelay = 2000;
-unsigned long lastBlinkTime = 0;
-unsigned long nextBlinkDelay = 3000;
-
-void renderStats()
+// --- MODES ---
+// To add a mode: add it to the enum before MODE_COUNT, write its enter/update
+// functions, and add a case to each switch in enterMode() / updateMode().
+enum Mode : uint8_t
 {
-    u8g.firstPage();
-    do
-    {
-        u8g.setFont(u8g_font_helvR08);
-        u8g.drawStr(0, 15, ("PROCESSOR: " + String(processorName)).c_str());
-        u8g.drawStr(0, 30, ("CPU: " + String(cpuUsage, 2) + "%").c_str());
-        u8g.drawStr(0, 45, ("RAM: " + String(ramUsage, 2) + "%").c_str());
-        drawWalkingMan(u8g, 92, 30, walkFrame);
-    } while (u8g.nextPage());
+    MODE_FACE,
+    MODE_STATS,
+    MODE_COUNT // keep last — used for cycling and bounds checks
+};
+
+Mode currentMode = MODE_FACE;
+
+//*********************************************************************************************
+//  FACE MODE
+//*********************************************************************************************
+
+void faceEnter()
+{
+    roboEyes.setMood(DEFAULT);
 }
 
-void readSerial()
+void faceUpdate()
 {
-    if (!Serial.available())
+    // RoboEyes owns the whole framebuffer: drawEyes() calls clearDisplay() at
+    // the start and display() at the end, so nothing else may draw in this mode.
+    roboEyes.update();
+
+    static unsigned long lastChange = 0;
+    static int state = 0;
+
+    if (millis() - lastChange > 5000)
+    {
+        lastChange = millis();
+        state = (state + 1) % 4;
+
+        switch (state)
+        {
+        case 0:
+            roboEyes.setMood(DEFAULT);
+            break;
+        case 1:
+            roboEyes.setMood(HAPPY);
+            break;
+        case 2:
+            roboEyes.setMood(TIRED);
+            break;
+        case 3:
+            roboEyes.anim_laugh();
+            break;
+        }
+    }
+}
+
+//*********************************************************************************************
+//  STATS MODE
+//*********************************************************************************************
+
+// Full-width progress bar, 10px tall.
+void drawBar(int16_t y, float percent)
+{
+    if (percent < 0)
+    {
+        percent = 0;
+    }
+    if (percent > 100)
+    {
+        percent = 100;
+    }
+
+    display.drawRect(0, y, SCREEN_WIDTH, 10, SH110X_WHITE);
+
+    int16_t fill = (int16_t)((SCREEN_WIDTH - 4) * percent / 100.0f + 0.5f);
+    if (fill > 0)
+    {
+        display.fillRect(2, y + 2, fill, 6, SH110X_WHITE);
+    }
+}
+
+// Label on the left, right-aligned percentage on the right.
+void drawStatLine(int16_t y, const char *label, float percent)
+{
+    char value[8];
+    snprintf(value, sizeof(value), "%3.0f%%", percent);
+
+    display.setCursor(0, y);
+    display.print(label);
+
+    // The default font advances 6px per character at size 1.
+    display.setCursor(SCREEN_WIDTH - strlen(value) * 6, y);
+    display.print(value);
+}
+
+void statsEnter()
+{
+    // Nothing to set up — statsUpdate() repaints the whole screen.
+}
+
+void statsUpdate()
+{
+    static unsigned long lastDraw = 0;
+    if (millis() - lastDraw < 100) // 10 Hz is plenty for a stats readout
     {
         return;
     }
+    lastDraw = millis();
 
-    String data = Serial.readStringUntil('\n');
-    char buf[64];
-    data.toCharArray(buf, sizeof(buf));
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SH110X_WHITE);
+    display.setTextWrap(false); // a long CPU name must clip, not wrap into the bars
 
-    char *processor = strtok(buf, ",");
+    if (!statsReceived)
+    {
+        const char *msg = "waiting for data...";
+        display.setCursor((SCREEN_WIDTH - strlen(msg) * 6) / 2, 28);
+        display.print(msg);
+        display.display();
+        return;
+    }
+
+    // Processor name across the top — centred if it fits, else left-aligned
+    // and clipped at the right edge.
+    int16_t x1, y1;
+    uint16_t w, h;
+    display.getTextBounds(processorName, 0, 0, &x1, &y1, &w, &h);
+    display.setCursor(w < SCREEN_WIDTH ? (SCREEN_WIDTH - w) / 2 : 0, 0);
+    display.print(processorName);
+
+    display.drawFastHLine(0, 11, SCREEN_WIDTH, SH110X_WHITE);
+
+    drawStatLine(16, "CPU", cpuUsage);
+    drawBar(26, cpuUsage);
+
+    drawStatLine(40, "RAM", ramUsage);
+    drawBar(50, ramUsage);
+
+    display.display();
+}
+
+//*********************************************************************************************
+//  MODE DISPATCH
+//*********************************************************************************************
+
+void enterMode(Mode mode)
+{
+    currentMode = mode;
+
+    // Every mode starts from a blank buffer so leftovers can't bleed through.
+    display.clearDisplay();
+    display.display();
+
+    switch (mode)
+    {
+    case MODE_FACE:
+        faceEnter();
+        break;
+    case MODE_STATS:
+        statsEnter();
+        break;
+    default:
+        break;
+    }
+}
+
+void setMode(Mode mode)
+{
+    if (mode >= MODE_COUNT || mode == currentMode)
+    {
+        return;
+    }
+    enterMode(mode);
+}
+
+void nextMode()
+{
+    enterMode((Mode)((currentMode + 1) % MODE_COUNT));
+}
+
+void updateMode()
+{
+    switch (currentMode)
+    {
+    case MODE_FACE:
+        faceUpdate();
+        break;
+    case MODE_STATS:
+        statsUpdate();
+        break;
+    default:
+        break;
+    }
+}
+
+//*********************************************************************************************
+//  SERIAL
+//*********************************************************************************************
+
+void parseStats(char *line)
+{
+    char *processor = strtok(line, ",");
     char *cpu = strtok(NULL, ",");
     char *ram = strtok(NULL, ",");
 
@@ -61,93 +264,97 @@ void readSerial()
     processorName[sizeof(processorName) - 1] = '\0';
     cpuUsage = atof(cpu);
     ramUsage = atof(ram);
+    statsReceived = true;
 }
 
-void runStatsPhase()
+void handleLine(char *line)
 {
-    if (millis() - lastFrameTime >= WALKING_MAN_FRAME_DELAY)
-    {
-        lastFrameTime = millis();
-        walkFrame++;
-        renderStats();
-    }
-}
+#if DEBUG_SERIAL
+    Serial.printf("[rx] \"%s\"\n", line);
+#endif
 
-void runFacePhase()
-{
-    unsigned long now = millis();
-
-    if (mood != NEUTRAL)
+    if (strncasecmp(line, "mode ", 5) == 0)
     {
-        renderFace();
+        const char *arg = line + 5;
+
+        if (strcasecmp(arg, "face") == 0)
+        {
+            setMode(MODE_FACE);
+        }
+        else if (strcasecmp(arg, "stats") == 0)
+        {
+            setMode(MODE_STATS);
+        }
+        else if (strcasecmp(arg, "next") == 0)
+        {
+            nextMode();
+        }
+#if DEBUG_SERIAL
+        else
+        {
+            Serial.printf("[!!] unknown mode \"%s\"\n", arg);
+        }
+        Serial.printf("[ok] mode is now %d\n", currentMode);
+#endif
         return;
     }
 
-    if (now - lastLookTime > nextLookDelay)
+    parseStats(line);
+}
+
+// Non-blocking: consumes whatever bytes have arrived and dispatches on newline.
+// (readStringUntil() stalls the animation for up to its 1s timeout whenever a
+// line arrives split across reads.)
+// CR, LF and CRLF all terminate a line — terminals differ on which they send,
+// and an empty line is ignored so CRLF doesn't dispatch twice.
+void readSerial()
+{
+    static char buffer[80];
+    static uint8_t length = 0;
+
+    while (Serial.available())
     {
-        updateLookOffset();
-        lastLookTime = now;
-        nextLookDelay = random(1500, 4000);
-    }
-    renderFace();
-    if (now - lastBlinkTime > nextBlinkDelay)
-    {
-        doBlink();
-        if (random(0, 100) < 25)
+        char c = Serial.read();
+
+        if (c == '\n' || c == '\r')
         {
-            delay(120);
-            doBlink();
+            buffer[length] = '\0';
+            if (length > 0)
+            {
+                handleLine(buffer);
+            }
+            length = 0;
+            continue;
         }
-        lastBlinkTime = now;
-        nextBlinkDelay = random(2000, 5000);
+
+        if (length < sizeof(buffer) - 1)
+        {
+            buffer[length++] = c;
+        }
     }
 }
 
-void startFacePhase()
-{
-    setRandomMood();
-    unsigned long now = millis();
-    lastLookTime = now;
-    nextLookDelay = random(1500, 4000);
-    lastBlinkTime = now;
-    nextBlinkDelay = random(2000, 5000);
-}
+//*********************************************************************************************
+//  MAIN
+//*********************************************************************************************
 
 void setup()
 {
-    randomSeed(analogRead(A0));
+    Serial.begin(115200);
 
-    if (u8g.getMode() == U8G_MODE_BW)
-    {
-        u8g.setColorIndex(1); // pixel on
-    }
-    Serial.begin(9600);
+    display.begin(0, true);
+    display.clearDisplay();
+    display.display();
 
-    mood = NEUTRAL;
-    phaseStartTime = millis();
+    roboEyes.begin(SCREEN_WIDTH, SCREEN_HEIGHT, 100);
+    roboEyes.setAutoblinker(ON, 3, 2);
+    roboEyes.setIdleMode(ON, 2, 2);
+
+    enterMode(MODE_FACE);
 }
 
 void loop()
 {
     readSerial();
-
-    unsigned long now = millis();
-    if (now - phaseStartTime >= PHASE_DURATION)
-    {
-        phaseStartTime = now;
-        showingStats = !showingStats;
-        if (!showingStats)
-        {
-            startFacePhase();
-        }
-    }
-
-    if (showingStats)
-    {
-        runStatsPhase();
-    }
-    else
-    {
-        runFacePhase();
-    }
+    updateMode();
 }
